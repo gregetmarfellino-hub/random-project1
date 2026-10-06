@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.example.pyclean_mobile"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
