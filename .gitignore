@@ -49,3 +49,4 @@ app.*.map.json
 
 # PyClean runtime data
 pyclean_logs.db
+pyclean_config.json
