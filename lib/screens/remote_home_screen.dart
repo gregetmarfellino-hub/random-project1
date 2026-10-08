@@ -1,11 +1,9 @@
-import 'dart:convert';
-import 'dart:io';
 import 'dart:math';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 
+import '../services/pyclean_api.dart';
 import '../widgets/ar_hologram_widget.dart';
 import 'qr_scanner_page.dart';
 
@@ -17,7 +15,8 @@ class RemoteHomeScreen extends StatefulWidget {
 }
 
 class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
-  String serverUrl = "";
+  final PyCleanApi _api = PyCleanApi();
+
   bool isConnected = false;
 
   String currentPath = "";
@@ -31,13 +30,9 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
   final TextEditingController searchController = TextEditingController();
 
   void connectToServer(String url) {
+    _api.setServerUrl(url);
+
     setState(() {
-      serverUrl = url.trim();
-
-      if (serverUrl.endsWith('/')) {
-        serverUrl = serverUrl.substring(0, serverUrl.length - 1);
-      }
-
       isConnected = true;
     });
 
@@ -63,31 +58,21 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
   }
 
   Future fetchDirectory(String? path) async {
-    if (serverUrl.isEmpty) return;
+    if (!_api.isConfigured) return;
 
     setState(() {
       isLoadingFiles = true;
     });
 
     try {
-      final response = await http.post(
-        Uri.parse('$serverUrl/api/browse'),
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({
-          'path': path,
-        }),
-      );
+      final result = await _api.browse(path);
 
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-
+      if (result.isSuccess) {
         setState(() {
-          currentPath = data['current_path'] ?? '';
-          parentPath = data['parent_path'] ?? '';
+          currentPath = result.currentPath;
+          parentPath = result.parentPath;
 
-          allFileItems = data['items'] ?? [];
+          allFileItems = result.items;
           filteredFileItems = allFileItems;
 
           searchController.clear();
@@ -136,7 +121,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
   }
 
   Future<void> uploadFileToPC() async {
-    if (currentPath.isEmpty || serverUrl.isEmpty) {
+    if (currentPath.isEmpty || !_api.isConfigured) {
       return;
     }
 
@@ -147,40 +132,20 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
       return;
     }
 
-    final File fileToUpload =
-        File(pickedFile.path!);
-
     showSnackBar(
       "Mengunggah file ke PC... ⏳",
       Colors.blue,
     );
 
     try {
-      final request = http.MultipartRequest(
-        'POST',
-        Uri.parse('$serverUrl/api/upload'),
-      );
-
-      request.fields['target_dir'] = currentPath;
-
-      request.files.add(
-        await http.MultipartFile.fromPath(
-          'file',
-          fileToUpload.path,
-        ),
-      );
-
-      final streamedResponse =
-          await request.send();
-
-      final response =
-          await http.Response.fromStream(
-        streamedResponse,
+      final result = await _api.uploadFile(
+        targetDirectory: currentPath,
+        filePath: pickedFile.path!,
       );
 
       if (!mounted) return;
 
-      if (response.statusCode == 200) {
+      if (result.isSuccess) {
         showSnackBar(
           "✅ File berhasil terkirim ke PC!",
           Colors.green,
@@ -189,7 +154,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
         await fetchDirectory(currentPath);
       } else {
         showSnackBar(
-          "Gagal upload: ${response.body}",
+          "Gagal upload: ${result.rawBody}",
           Colors.red,
         );
       }
@@ -253,23 +218,11 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
         Colors.blue,
       );
 
-      final response = await http.post(
-        Uri.parse(
-          '$serverUrl/api/execute-sort',
-        ),
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({
-          'target_dir': targetPath,
-        }),
-      );
+      final result = await _api.sortFolder(targetPath);
 
-      final data = jsonDecode(response.body);
-
-      if (response.statusCode == 200) {
+      if (result.isSuccess) {
         showSnackBar(
-          data['message'] ??
+          result.message ??
               "Sukses menyortir!",
           Colors.green,
         );
@@ -277,7 +230,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
         fetchDirectory(currentPath);
       } else {
         showSnackBar(
-          data['message'] ??
+          result.message ??
               "Gagal menyortir",
           Colors.red,
         );
@@ -334,23 +287,11 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
     if (!confirm) return;
 
     try {
-      final response = await http.post(
-        Uri.parse(
-          '$serverUrl/api/delete',
-        ),
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({
-          'path': itemPath,
-        }),
-      );
+      final result = await _api.deleteItem(itemPath);
 
-      final data = jsonDecode(response.body);
-
-      if (response.statusCode == 200) {
+      if (result.isSuccess) {
         showSnackBar(
-          data['message'] ??
+          result.message ??
               "Item terhapus!",
           Colors.green,
         );
@@ -358,7 +299,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
         fetchDirectory(currentPath);
       } else {
         showSnackBar(
-          data['message'] ??
+          result.message ??
               "Gagal menghapus",
           Colors.red,
         );
