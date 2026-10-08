@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
+import '../services/connection_store.dart';
 import '../services/pyclean_api.dart';
 import '../widgets/ar_hologram_widget.dart';
 import 'qr_scanner_page.dart';
@@ -16,8 +17,15 @@ class RemoteHomeScreen extends StatefulWidget {
 
 class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
   final PyCleanApi _api = PyCleanApi();
+  final ConnectionStore _connectionStore = ConnectionStore();
 
   bool isConnected = false;
+  bool isCheckingSavedPc = false;
+  bool? savedPcOnline;
+
+  String savedServerUrl = '';
+  String savedDeviceName = 'PyClean PC';
+  String savedLastPath = '';
 
   String currentPath = "";
   String parentPath = "";
@@ -29,14 +37,130 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
 
   final TextEditingController searchController = TextEditingController();
 
-  void connectToServer(String url) {
-    _api.setServerUrl(url);
+  @override
+  void initState() {
+    super.initState();
+    _loadSavedConnection();
+  }
+
+  @override
+  void dispose() {
+    searchController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadSavedConnection() async {
+    final saved = await _connectionStore.load();
+    if (!mounted) return;
 
     setState(() {
-      isConnected = true;
+      savedServerUrl = saved.serverUrl;
+      savedDeviceName = saved.deviceName;
+      savedLastPath = saved.lastPath;
     });
 
-    fetchDirectory(null);
+    if (saved.exists) {
+      await refreshSavedPcStatus();
+    }
+  }
+
+  Future<void> refreshSavedPcStatus() async {
+    if (savedServerUrl.trim().isEmpty) return;
+
+    setState(() {
+      isCheckingSavedPc = true;
+    });
+
+    _api.setServerUrl(savedServerUrl);
+
+    try {
+      final status = await _api.status();
+      if (!mounted) return;
+
+      setState(() {
+        savedPcOnline = status.isSuccess;
+        if (status.deviceName.trim().isNotEmpty) {
+          savedDeviceName = status.deviceName;
+        }
+      });
+
+      if (status.isSuccess) {
+        await _connectionStore.saveConnection(
+          serverUrl: _api.serverUrl,
+          deviceName: savedDeviceName,
+        );
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        savedPcOnline = false;
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          isCheckingSavedPc = false;
+        });
+      }
+    }
+  }
+
+  Future<void> connectToServer(
+    String url, {
+    String? preferredPath,
+  }) async {
+    _api.setServerUrl(url);
+
+    try {
+      final status = await _api.status();
+
+      if (!status.isSuccess) {
+        throw StateError('PyClean server tidak tersedia');
+      }
+
+      final deviceName = status.deviceName.trim().isEmpty
+          ? 'PyClean PC'
+          : status.deviceName.trim();
+
+      await _connectionStore.saveConnection(
+        serverUrl: _api.serverUrl,
+        deviceName: deviceName,
+      );
+
+      if (!mounted) return;
+
+      setState(() {
+        isConnected = true;
+        savedServerUrl = _api.serverUrl;
+        savedDeviceName = deviceName;
+        savedPcOnline = true;
+      });
+
+      final targetPath = preferredPath?.trim();
+      await fetchDirectory(
+        targetPath == null || targetPath.isEmpty ? null : targetPath,
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() {
+        isConnected = false;
+        savedPcOnline = false;
+      });
+
+      showSnackBar(
+        'Tidak bisa terhubung ke PC: $e',
+        Colors.red,
+      );
+    }
+  }
+
+  Future<void> reconnectSavedPc() async {
+    if (savedServerUrl.trim().isEmpty) return;
+
+    await connectToServer(
+      savedServerUrl,
+      preferredPath: savedLastPath,
+    );
   }
 
   String formatBytes(dynamic bytes) {
@@ -78,7 +202,10 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
           searchController.clear();
 
           isLoadingFiles = false;
+          savedLastPath = result.currentPath;
         });
+
+        await _connectionStore.saveLastPath(result.currentPath);
       } else {
         showSnackBar(
           "Gagal mengambil direktori PC",
@@ -594,77 +721,172 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
   }
 
   Widget buildConnectScreen() {
+    final hasSavedPc = savedServerUrl.trim().isNotEmpty;
+    final statusColor = savedPcOnline == true
+        ? const Color(0xFFA6E3A1)
+        : savedPcOnline == false
+            ? Colors.redAccent
+            : Colors.grey;
+    final statusText = isCheckingSavedPc
+        ? 'Checking...'
+        : savedPcOnline == true
+            ? 'Online'
+            : savedPcOnline == false
+                ? 'Offline'
+                : 'Unknown';
+
     return Center(
-      child: Column(
-        mainAxisAlignment:
-            MainAxisAlignment.center,
-        children: [
-          const Icon(
-            Icons.phonelink_setup,
-            size: 80,
-            color: Color(0xFF89B4FA),
-          ),
-
-          const SizedBox(
-            height: 20,
-          ),
-
-          const Text(
-            "PyClean PC Remote",
-            style: TextStyle(
-              fontSize: 22,
-              fontWeight:
-                  FontWeight.bold,
-              color: Colors.white,
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(
+              Icons.phonelink_setup,
+              size: 80,
+              color: Color(0xFF89B4FA),
             ),
-          ),
-
-          const SizedBox(
-            height: 8,
-          ),
-
-          const Text(
-            "Hubungkan ke PC kamu",
-            style: TextStyle(
-              fontSize: 14,
-              color: Colors.grey,
-            ),
-          ),
-
-          const SizedBox(
-            height: 30,
-          ),
-
-          ElevatedButton.icon(
-            style:
-                ElevatedButton.styleFrom(
-              padding:
-                  const EdgeInsets
-                      .symmetric(
-                horizontal: 24,
-                vertical: 12,
-              ),
-              backgroundColor:
-                  const Color(
-                0xFF89B4FA,
-              ),
-            ),
-            icon: const Icon(
-              Icons.qr_code_scanner,
-              color: Colors.black,
-            ),
-            label: const Text(
-              "Scan QR Code PC",
+            const SizedBox(height: 20),
+            const Text(
+              'PyClean PC Remote',
               style: TextStyle(
-                color: Colors.black,
-                fontWeight:
-                    FontWeight.bold,
+                fontSize: 22,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
               ),
             ),
-            onPressed:
-                openScanner,
-          ),
-        ],
+            const SizedBox(height: 8),
+            const Text(
+              'Hubungkan ke PC kamu',
+              style: TextStyle(
+                fontSize: 14,
+                color: Colors.grey,
+              ),
+            ),
+            if (hasSavedPc) ...[
+              const SizedBox(height: 24),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF21222C),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: statusColor.withValues(alpha: 0.55),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          width: 9,
+                          height: 9,
+                          decoration: BoxDecoration(
+                            color: statusColor,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            savedDeviceName,
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        Text(
+                          statusText,
+                          style: TextStyle(
+                            color: statusColor,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      savedServerUrl,
+                      style: const TextStyle(
+                        color: Colors.white60,
+                        fontFamily: 'monospace',
+                        fontSize: 12,
+                      ),
+                    ),
+                    if (savedLastPath.trim().isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        'Last folder: $savedLastPath',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white38,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 14),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: FilledButton.icon(
+                            onPressed: isCheckingSavedPc
+                                ? null
+                                : reconnectSavedPc,
+                            icon: const Icon(Icons.link),
+                            label: const Text('Reconnect'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        IconButton(
+                          tooltip: 'Check status',
+                          onPressed: isCheckingSavedPc
+                              ? null
+                              : refreshSavedPcStatus,
+                          icon: isCheckingSavedPc
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.refresh),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            const SizedBox(height: 24),
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 12,
+                ),
+                backgroundColor: const Color(0xFF89B4FA),
+              ),
+              icon: const Icon(
+                Icons.qr_code_scanner,
+                color: Colors.black,
+              ),
+              label: Text(
+                hasSavedPc ? 'Scan QR PC Lain' : 'Scan QR Code PC',
+                style: const TextStyle(
+                  color: Colors.black,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              onPressed: openScanner,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -732,6 +954,41 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                       TextOverflow.ellipsis,
                 ),
               ),
+
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 4,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0x2239D98A),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: const Color(0x6639D98A),
+                  ),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.circle,
+                      size: 7,
+                      color: Color(0xFFA6E3A1),
+                    ),
+                    SizedBox(width: 5),
+                    Text(
+                      'ONLINE',
+                      style: TextStyle(
+                        color: Color(0xFFA6E3A1),
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              const SizedBox(width: 8),
 
               OutlinedButton.icon(
                 style:
@@ -1078,7 +1335,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
       return;
     }
 
-    connectToServer(
+    await connectToServer(
       result.trim(),
     );
   }

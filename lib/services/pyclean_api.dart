@@ -2,6 +2,29 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+
+class ServerStatusResult {
+  const ServerStatusResult({
+    required this.statusCode,
+    required this.status,
+    required this.deviceName,
+    required this.ip,
+    required this.port,
+    required this.running,
+    required this.rawBody,
+  });
+
+  final int statusCode;
+  final String status;
+  final String deviceName;
+  final String ip;
+  final int port;
+  final bool running;
+  final String rawBody;
+
+  bool get isSuccess => statusCode == 200 && running;
+}
+
 class BrowseResult {
   const BrowseResult({
     required this.statusCode,
@@ -48,6 +71,28 @@ class PyCleanApi {
     }
 
     _serverUrl = normalized;
+  }
+
+  Future<ServerStatusResult> status({
+    Duration timeout = const Duration(seconds: 3),
+  }) async {
+    _requireServer();
+
+    final response = await http
+        .get(Uri.parse('$_serverUrl/api/status'))
+        .timeout(timeout);
+
+    final data = _decodeObject(response.body);
+
+    return ServerStatusResult(
+      statusCode: response.statusCode,
+      status: data['status']?.toString() ?? '',
+      deviceName: data['device_name']?.toString() ?? 'PyClean PC',
+      ip: data['ip']?.toString() ?? '',
+      port: int.tryParse(data['port']?.toString() ?? '') ?? 0,
+      running: data['running'] == true || data['status'] == 'online',
+      rawBody: response.body,
+    );
   }
 
   Future<BrowseResult> browse(String? path) async {
