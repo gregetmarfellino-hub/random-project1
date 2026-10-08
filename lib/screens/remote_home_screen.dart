@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../services/connection_store.dart';
 import '../services/pyclean_api.dart';
 import '../widgets/ar_hologram_widget.dart';
+import '../widgets/remote_folder_picker.dart';
 import 'qr_scanner_page.dart';
 
 class RemoteHomeScreen extends StatefulWidget {
@@ -321,26 +322,26 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
         return;
       }
 
-final savedPath = await FilePicker.saveFile(
-  dialogTitle: 'Simpan file dari PyClean PC',
-  fileName: itemName,
-  bytes: result.bytes,
-);
+      final savedPath = await FilePicker.saveFile(
+        dialogTitle: 'Simpan file dari PyClean PC',
+        fileName: itemName,
+        bytes: result.bytes,
+      );
 
-if (!mounted) return;
+      if (!mounted) return;
 
-if (savedPath == null) {
-  showSnackBar(
-    'Penyimpanan dibatalkan',
-    Colors.orange,
-  );
-  return;
-}
+      if (savedPath == null) {
+        showSnackBar(
+          'Penyimpanan dibatalkan',
+          Colors.orange,
+        );
+        return;
+      }
 
-showSnackBar(
-  '✅ $itemName berhasil disimpan ke HP!',
-  Colors.green,
-);
+      showSnackBar(
+        '✅ $itemName berhasil disimpan ke HP!',
+        Colors.green,
+      );
     } catch (e) {
       if (!mounted) return;
 
@@ -350,6 +351,135 @@ showSnackBar(
       );
     }
   }
+
+  Future<void> renameRemoteItem(
+    String itemPath,
+    String itemName,
+  ) async {
+    String draftName = itemName;
+
+    final String? newName = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Ganti Nama'),
+        content: TextFormField(
+          initialValue: itemName,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Nama baru',
+            hintText: 'Masukkan nama file/folder',
+          ),
+          onChanged: (value) {
+            draftName = value;
+          },
+          onFieldSubmitted: (value) {
+            final trimmed = value.trim();
+            if (trimmed.isNotEmpty) {
+              Navigator.pop(ctx, trimmed);
+            }
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Batal'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final trimmed = draftName.trim();
+              if (trimmed.isNotEmpty) {
+                Navigator.pop(ctx, trimmed);
+              }
+            },
+            child: const Text('Rename'),
+          ),
+        ],
+      ),
+    );
+
+    if (!mounted || newName == null || newName.trim().isEmpty) {
+      return;
+    }
+
+    if (newName.trim() == itemName) {
+      return;
+    }
+
+    try {
+      final result = await _api.renameItem(
+        itemPath: itemPath,
+        newName: newName.trim(),
+      );
+
+      if (!mounted) return;
+
+      if (result.isSuccess) {
+        showSnackBar(
+          result.message ?? 'Nama berhasil diubah.',
+          Colors.green,
+        );
+        await fetchDirectory(currentPath);
+      } else {
+        showSnackBar(
+          result.message ?? 'Gagal mengganti nama.',
+          Colors.red,
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      showSnackBar(
+        'Error rename: $e',
+        Colors.red,
+      );
+    }
+  }
+
+  Future<void> moveRemoteItem(
+    String itemPath,
+    bool isDirectory,
+  ) async {
+    final String? targetDirectory = await showDialog<String>(
+      context: context,
+      builder: (_) => RemoteFolderPickerDialog(
+        api: _api,
+        initialPath: currentPath,
+        blockedPath: isDirectory ? itemPath : null,
+      ),
+    );
+
+    if (!mounted || targetDirectory == null || targetDirectory.trim().isEmpty) {
+      return;
+    }
+
+    try {
+      final result = await _api.moveItem(
+        itemPath: itemPath,
+        targetDirectory: targetDirectory,
+      );
+
+      if (!mounted) return;
+
+      if (result.isSuccess) {
+        showSnackBar(
+          result.message ?? 'Item berhasil dipindahkan.',
+          Colors.green,
+        );
+        await fetchDirectory(currentPath);
+      } else {
+        showSnackBar(
+          result.message ?? 'Gagal memindahkan item.',
+          Colors.red,
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      showSnackBar(
+        'Error move: $e',
+        Colors.red,
+      );
+    }
+  }
+
 
   Future executeSortFolder(
     String targetPath,
@@ -1306,6 +1436,18 @@ showSnackBar(
                                     name,
                                   );
                                 } else if (value ==
+                                    'rename') {
+                                  renameRemoteItem(
+                                    path,
+                                    name,
+                                  );
+                                } else if (value ==
+                                    'move') {
+                                  moveRemoteItem(
+                                    path,
+                                    isDir,
+                                  );
+                                } else if (value ==
                                     'delete') {
                                   deleteItem(
                                     path,
@@ -1365,6 +1507,52 @@ showSnackBar(
                                       ],
                                     ),
                                   ),
+
+                                const PopupMenuItem(
+                                  value:
+                                      'rename',
+                                  child: Row(
+                                    children: [
+                                      Icon(
+                                        Icons.edit_outlined,
+                                        color:
+                                            Color(
+                                          0xFFF9E2AF,
+                                        ),
+                                        size: 18,
+                                      ),
+                                      SizedBox(
+                                        width: 10,
+                                      ),
+                                      Text(
+                                        'Ganti Nama',
+                                      ),
+                                    ],
+                                  ),
+                                ),
+
+                                const PopupMenuItem(
+                                  value:
+                                      'move',
+                                  child: Row(
+                                    children: [
+                                      Icon(
+                                        Icons.drive_file_move_outline,
+                                        color:
+                                            Color(
+                                          0xFFCBA6F7,
+                                        ),
+                                        size: 18,
+                                      ),
+                                      SizedBox(
+                                        width: 10,
+                                      ),
+                                      Text(
+                                        'Pindahkan',
+                                      ),
+                                    ],
+                                  ),
+                                ),
 
                                 const PopupMenuItem(
                                   value:

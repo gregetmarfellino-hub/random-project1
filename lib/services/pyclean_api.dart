@@ -205,6 +205,33 @@ class PyCleanApi {
     );
   }
 
+  Future<ApiActionResult> renameItem({
+    required String itemPath,
+    required String newName,
+  }) async {
+    return _postJsonAction(
+      '/api/rename',
+      {
+        'path': itemPath,
+        'new_name': newName,
+      },
+    );
+  }
+
+  Future<ApiActionResult> moveItem({
+    required String itemPath,
+    required String targetDirectory,
+  }) async {
+    return _postJsonAction(
+      '/api/move',
+      {
+        'path': itemPath,
+        'target_dir': targetDirectory,
+      },
+    );
+  }
+
+
   Future<ApiActionResult> sortFolder(String targetPath) async {
     return _postJsonAction(
       '/api/execute-sort',
