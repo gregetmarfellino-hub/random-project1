@@ -295,6 +295,62 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
     }
   }
 
+  Future<void> downloadFileFromPC(
+    String itemPath,
+    String itemName,
+  ) async {
+    if (!_api.isConfigured || itemPath.trim().isEmpty) {
+      return;
+    }
+
+    showSnackBar(
+      'Mengunduh $itemName dari PC... ⏳',
+      Colors.blue,
+    );
+
+    try {
+      final result = await _api.downloadFile(itemPath);
+
+      if (!mounted) return;
+
+      if (!result.isSuccess) {
+        showSnackBar(
+          result.message ?? 'Gagal mengunduh file dari PC',
+          Colors.red,
+        );
+        return;
+      }
+
+final savedPath = await FilePicker.saveFile(
+  dialogTitle: 'Simpan file dari PyClean PC',
+  fileName: itemName,
+  bytes: result.bytes,
+);
+
+if (!mounted) return;
+
+if (savedPath == null) {
+  showSnackBar(
+    'Penyimpanan dibatalkan',
+    Colors.orange,
+  );
+  return;
+}
+
+showSnackBar(
+  '✅ $itemName berhasil disimpan ke HP!',
+  Colors.green,
+);
+    } catch (e) {
+      if (!mounted) return;
+
+      showSnackBar(
+        'Error download: $e',
+        Colors.red,
+      );
+    }
+  }
+
   Future executeSortFolder(
     String targetPath,
   ) async {
@@ -1244,6 +1300,12 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                                     item,
                                   );
                                 } else if (value ==
+                                    'download') {
+                                  downloadFileFromPC(
+                                    path,
+                                    name,
+                                  );
+                                } else if (value ==
                                     'delete') {
                                   deleteItem(
                                     path,
@@ -1279,6 +1341,30 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                                     ],
                                   ),
                                 ),
+
+                                if (!isDir)
+                                  const PopupMenuItem(
+                                    value:
+                                        'download',
+                                    child: Row(
+                                      children: [
+                                        Icon(
+                                          Icons.download_outlined,
+                                          color: Color(0xFFA6E3A1),
+                                          size: 18,
+                                        ),
+                                        SizedBox(
+                                          width: 10,
+                                        ),
+                                        Text(
+                                          'Download ke HP',
+                                          style: TextStyle(
+                                            color: Color(0xFFA6E3A1),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
 
                                 const PopupMenuItem(
                                   value:

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
@@ -51,6 +52,22 @@ class ApiActionResult {
   });
 
   final int statusCode;
+  final String rawBody;
+  final String? message;
+
+  bool get isSuccess => statusCode == 200;
+}
+
+class DownloadResult {
+  const DownloadResult({
+    required this.statusCode,
+    required this.bytes,
+    required this.rawBody,
+    this.message,
+  });
+
+  final int statusCode;
+  final Uint8List bytes;
   final String rawBody;
   final String? message;
 
@@ -154,6 +171,35 @@ class PyCleanApi {
 
     return ApiActionResult(
       statusCode: response.statusCode,
+      rawBody: response.body,
+      message: _tryReadMessage(response.body),
+    );
+  }
+
+  Future<DownloadResult> downloadFile(String filePath) async {
+    _requireServer();
+
+    final response = await http.post(
+      Uri.parse('$_serverUrl/api/download'),
+      headers: const {
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({
+        'path': filePath,
+      }),
+    );
+
+    if (response.statusCode == 200) {
+      return DownloadResult(
+        statusCode: response.statusCode,
+        bytes: response.bodyBytes,
+        rawBody: '',
+      );
+    }
+
+    return DownloadResult(
+      statusCode: response.statusCode,
+      bytes: Uint8List(0),
       rawBody: response.body,
       message: _tryReadMessage(response.body),
     );
