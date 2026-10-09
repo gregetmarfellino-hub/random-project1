@@ -36,6 +36,10 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
 
   bool isLoadingFiles = false;
 
+  bool isSelectionMode = false;
+  bool isBatchBusy = false;
+  final Set<String> selectedPaths = <String>{};
+
   final TextEditingController searchController = TextEditingController();
 
   @override
@@ -246,6 +250,205 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
         }).toList();
       });
     }
+  }
+
+  List<Map> get selectedItems {
+    final items = <Map>[];
+
+    for (final item in allFileItems) {
+      if (item is! Map) continue;
+
+      final path = (item['path'] ?? '').toString();
+      if (selectedPaths.contains(path)) {
+        items.add(item);
+      }
+    }
+
+    return items;
+  }
+
+  void enterSelectionMode([Map? firstItem]) {
+    if (isBatchBusy) return;
+
+    setState(() {
+      isSelectionMode = true;
+
+      if (firstItem != null) {
+        final path = (firstItem['path'] ?? '').toString();
+        if (path.isNotEmpty) {
+          selectedPaths.add(path);
+        }
+      }
+    });
+  }
+
+  void toggleSelection(Map item) {
+    if (isBatchBusy) return;
+
+    final path = (item['path'] ?? '').toString();
+    if (path.isEmpty) return;
+
+    setState(() {
+      isSelectionMode = true;
+      if (!selectedPaths.add(path)) {
+        selectedPaths.remove(path);
+      }
+    });
+  }
+
+  void selectAllVisible() {
+    if (isBatchBusy) return;
+
+    setState(() {
+      isSelectionMode = true;
+      for (final item in filteredFileItems) {
+        if (item is! Map) continue;
+        final path = (item['path'] ?? '').toString();
+        if (path.isNotEmpty) {
+          selectedPaths.add(path);
+        }
+      }
+    });
+  }
+
+  void clearSelection() {
+    setState(() {
+      selectedPaths.clear();
+      isSelectionMode = false;
+      isBatchBusy = false;
+    });
+  }
+
+  Future<void> moveSelectedItems() async {
+    final items = selectedItems;
+    if (items.isEmpty || isBatchBusy) return;
+
+    final String? targetDirectory = await showDialog<String>(
+      context: context,
+      builder: (_) => RemoteFolderPickerDialog(
+        api: _api,
+        initialPath: currentPath,
+      ),
+    );
+
+    if (!mounted || targetDirectory == null || targetDirectory.trim().isEmpty) {
+      return;
+    }
+
+    setState(() {
+      isBatchBusy = true;
+    });
+
+    int moved = 0;
+    int failed = 0;
+
+    for (final item in items) {
+      final path = (item['path'] ?? '').toString();
+      if (path.isEmpty) {
+        failed++;
+        continue;
+      }
+
+      try {
+        final result = await _api.moveItem(
+          itemPath: path,
+          targetDirectory: targetDirectory,
+        );
+
+        if (result.isSuccess) {
+          moved++;
+        } else {
+          failed++;
+        }
+      } catch (_) {
+        failed++;
+      }
+    }
+
+    if (!mounted) return;
+
+    clearSelection();
+    await fetchDirectory(currentPath);
+
+    if (!mounted) return;
+
+    showSnackBar(
+      failed == 0
+          ? '✅ $moved item berhasil dipindahkan.'
+          : '$moved berhasil dipindahkan, $failed gagal.',
+      failed == 0 ? Colors.green : Colors.orange,
+    );
+  }
+
+  Future<void> deleteSelectedItems() async {
+    final items = selectedItems;
+    if (items.isEmpty || isBatchBusy) return;
+
+    final bool confirmed = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Hapus beberapa item?'),
+            content: Text(
+              '${items.length} item akan dihapus dari PC secara permanen.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Batal'),
+              ),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  backgroundColor: Colors.redAccent,
+                ),
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Hapus semua'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+
+    if (!confirmed || !mounted) return;
+
+    setState(() {
+      isBatchBusy = true;
+    });
+
+    int deleted = 0;
+    int failed = 0;
+
+    for (final item in items) {
+      final path = (item['path'] ?? '').toString();
+      if (path.isEmpty) {
+        failed++;
+        continue;
+      }
+
+      try {
+        final result = await _api.deleteItem(path);
+        if (result.isSuccess) {
+          deleted++;
+        } else {
+          failed++;
+        }
+      } catch (_) {
+        failed++;
+      }
+    }
+
+    if (!mounted) return;
+
+    clearSelection();
+    await fetchDirectory(currentPath);
+
+    if (!mounted) return;
+
+    showSnackBar(
+      failed == 0
+          ? '✅ $deleted item berhasil dihapus.'
+          : '$deleted berhasil dihapus, $failed gagal.',
+      failed == 0 ? Colors.green : Colors.orange,
+    );
   }
 
   Future<void> uploadFileToPC() async {
@@ -844,7 +1047,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
       ),
 
       floatingActionButton:
-          isConnected
+          isConnected && !isSelectionMode
               ? Column(
                   mainAxisSize:
                       MainAxisSize.min,
@@ -1080,163 +1283,193 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
   Widget buildExplorerScreen() {
     return Column(
       children: [
-        Container(
-          padding:
-              const EdgeInsets.symmetric(
-            horizontal: 12,
-            vertical: 10,
-          ),
-          color:
-              const Color(0xFF2A2A3C),
-
-          child: Row(
-            children: [
-              if (currentPath != parentPath)
+        if (isSelectionMode)
+          Container(
+            padding: const EdgeInsets.symmetric(
+              horizontal: 8,
+              vertical: 7,
+            ),
+            color: const Color(0xFF2A2A3C),
+            child: Row(
+              children: [
                 IconButton(
-                  icon: const Icon(
-                    Icons.arrow_back,
-                    size: 20,
-                  ),
-                  padding:
-                      EdgeInsets.zero,
-                  constraints:
-                      const BoxConstraints(),
-                  onPressed: () =>
-                      fetchDirectory(
-                    parentPath,
-                  ),
-                  tooltip:
-                      "Kembali ke folder atas",
+                  tooltip: 'Batal pilih',
+                  onPressed: isBatchBusy ? null : clearSelection,
+                  icon: const Icon(Icons.close),
                 ),
-
-              if (currentPath != parentPath)
-                const SizedBox(
-                  width: 8,
-                ),
-
-              const Icon(
-                Icons.folder_special,
-                color:
-                    Color(0xFFA6E3A1),
-                size: 18,
-              ),
-
-              const SizedBox(
-                width: 8,
-              ),
-
-              Expanded(
-                child: Text(
-                  currentPath,
-                  style:
-                      const TextStyle(
-                    fontFamily:
-                        'monospace',
-                    fontSize: 12,
-                    color:
-                        Color(0xFFA6E3A1),
-                  ),
-                  overflow:
-                      TextOverflow.ellipsis,
-                ),
-              ),
-
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 8,
-                  vertical: 4,
-                ),
-                decoration: BoxDecoration(
-                  color: const Color(0x2239D98A),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(
-                    color: const Color(0x6639D98A),
+                Expanded(
+                  child: Text(
+                    '${selectedPaths.length} dipilih',
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.circle,
-                      size: 7,
+                if (isBatchBusy)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 12),
+                    child: SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  )
+                else ...[
+                  IconButton(
+                    tooltip: 'Pilih semua yang terlihat',
+                    onPressed: filteredFileItems.isEmpty
+                        ? null
+                        : selectAllVisible,
+                    icon: const Icon(Icons.select_all),
+                  ),
+                  IconButton(
+                    tooltip: 'Pindahkan yang dipilih',
+                    onPressed: selectedPaths.isEmpty
+                        ? null
+                        : moveSelectedItems,
+                    icon: const Icon(
+                      Icons.drive_file_move_outline,
+                      color: Color(0xFFCBA6F7),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Hapus yang dipilih',
+                    onPressed: selectedPaths.isEmpty
+                        ? null
+                        : deleteSelectedItems,
+                    icon: const Icon(
+                      Icons.delete_outline,
+                      color: Colors.redAccent,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          )
+        else
+          Container(
+            padding: const EdgeInsets.symmetric(
+              horizontal: 12,
+              vertical: 10,
+            ),
+            color: const Color(0xFF2A2A3C),
+            child: Row(
+              children: [
+                if (currentPath != parentPath)
+                  IconButton(
+                    icon: const Icon(
+                      Icons.arrow_back,
+                      size: 20,
+                    ),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    onPressed: () => fetchDirectory(parentPath),
+                    tooltip: 'Kembali ke folder atas',
+                  ),
+                if (currentPath != parentPath)
+                  const SizedBox(width: 8),
+                const Icon(
+                  Icons.folder_special,
+                  color: Color(0xFFA6E3A1),
+                  size: 18,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    currentPath,
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 12,
                       color: Color(0xFFA6E3A1),
                     ),
-                    SizedBox(width: 5),
-                    Text(
-                      'ONLINE',
-                      style: TextStyle(
-                        color: Color(0xFFA6E3A1),
-                        fontSize: 9,
-                        fontWeight: FontWeight.bold,
-                      ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0x2239D98A),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: const Color(0x6639D98A),
                     ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(width: 8),
-
-              OutlinedButton.icon(
-                style:
-                    OutlinedButton.styleFrom(
-                  side:
-                      const BorderSide(
-                    color:
-                        Color(0xFFA6E3A1),
                   ),
-                  padding:
-                      const EdgeInsets
-                          .symmetric(
-                    horizontal: 10,
-                    vertical: 6,
-                  ),
-                  minimumSize:
-                      Size.zero,
-                  tapTargetSize:
-                      MaterialTapTargetSize
-                          .shrinkWrap,
-                ),
-                icon: const Icon(
-                  Icons.cleaning_services,
-                  color:
-                      Color(0xFFA6E3A1),
-                  size: 14,
-                ),
-                label: const Text(
-                  "Sortir",
-                  style: TextStyle(
-                    color:
-                        Color(0xFFA6E3A1),
-                    fontSize: 11,
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.circle,
+                        size: 7,
+                        color: Color(0xFFA6E3A1),
+                      ),
+                      SizedBox(width: 5),
+                      Text(
+                        'ONLINE',
+                        style: TextStyle(
+                          color: Color(0xFFA6E3A1),
+                          fontSize: 9,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                onPressed: () =>
-                    executeSortFolder(
-                  currentPath,
+                const SizedBox(width: 6),
+                IconButton(
+                  tooltip: 'Pilih beberapa item',
+                  onPressed: filteredFileItems.isEmpty
+                      ? null
+                      : enterSelectionMode,
+                  icon: const Icon(
+                    Icons.checklist,
+                    size: 20,
+                    color: Color(0xFF89B4FA),
+                  ),
                 ),
-              ),
-
-              const SizedBox(
-                width: 8,
-              ),
-
-              IconButton(
-                icon: const Icon(
-                  Icons.refresh,
-                  size: 20,
+                OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(
+                      color: Color(0xFFA6E3A1),
+                    ),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 6,
+                    ),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  icon: const Icon(
+                    Icons.cleaning_services,
+                    color: Color(0xFFA6E3A1),
+                    size: 14,
+                  ),
+                  label: const Text(
+                    'Sortir',
+                    style: TextStyle(
+                      color: Color(0xFFA6E3A1),
+                      fontSize: 11,
+                    ),
+                  ),
+                  onPressed: () => executeSortFolder(currentPath),
                 ),
-                padding:
-                    EdgeInsets.zero,
-                constraints:
-                    const BoxConstraints(),
-                onPressed: () =>
-                    fetchDirectory(
-                  currentPath,
+                const SizedBox(width: 6),
+                IconButton(
+                  icon: const Icon(
+                    Icons.refresh,
+                    size: 20,
+                  ),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  onPressed: () => fetchDirectory(currentPath),
+                  tooltip: 'Refresh',
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
 
         Padding(
           padding:
@@ -1345,6 +1578,9 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                             item['path'] ??
                                 '';
 
+                        final bool isSelected =
+                            selectedPaths.contains(path);
+
                         return Card(
                           margin:
                               const EdgeInsets
@@ -1352,10 +1588,9 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                             horizontal: 10,
                             vertical: 3,
                           ),
-                          color:
-                              const Color(
-                            0xFF21222C,
-                          ),
+                          color: isSelected
+                              ? const Color(0xFF30354A)
+                              : const Color(0xFF21222C),
 
                           child: ListTile(
                             dense: true,
@@ -1400,20 +1635,29 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                             ),
 
                             onTap: () {
-                              if (isDir) {
-                                fetchDirectory(
-                                  path,
-                                );
+                              if (isSelectionMode) {
+                                toggleSelection(item);
+                              } else if (isDir) {
+                                fetchDirectory(path);
                               }
                             },
 
-                            onLongPress: () =>
-                                show3dItemModal(
-                              item,
-                            ),
+                            onLongPress: () {
+                              if (isSelectionMode) {
+                                toggleSelection(item);
+                              } else {
+                                enterSelectionMode(item);
+                              }
+                            },
 
-                            trailing:
-                                PopupMenuButton(
+                            trailing: isSelectionMode
+                                ? Checkbox(
+                                    value: isSelected,
+                                    onChanged: isBatchBusy
+                                        ? null
+                                        : (_) => toggleSelection(item),
+                                  )
+                                : PopupMenuButton(
                               icon:
                                   const Icon(
                                 Icons.more_vert,
