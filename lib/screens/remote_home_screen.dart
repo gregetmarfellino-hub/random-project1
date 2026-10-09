@@ -7,6 +7,7 @@ import '../services/connection_store.dart';
 import '../services/pyclean_api.dart';
 import '../widgets/ar_hologram_widget.dart';
 import '../widgets/remote_folder_picker.dart';
+import 'device_hub_screen.dart';
 import 'qr_scanner_page.dart';
 
 class RemoteHomeScreen extends StatefulWidget {
@@ -1046,66 +1047,69 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
             : buildExplorerScreen(),
       ),
 
-      floatingActionButton:
-          isConnected && !isSelectionMode
-              ? Column(
-                  mainAxisSize:
-                      MainAxisSize.min,
-                  crossAxisAlignment:
-                      CrossAxisAlignment.end,
-                  children: [
-                    FloatingActionButton.small(
-                      heroTag:
-                          "qrScanBtn",
-                      tooltip:
-                          "Scan QR PC Lain",
-                      onPressed:
-                          openScanner,
-                      backgroundColor:
-                          const Color(
-                        0xFF2A2A3C,
-                      ),
-                      foregroundColor:
-                          const Color(
-                        0xFF89B4FA,
-                      ),
-                      shape:
-                          RoundedRectangleBorder(
-                        borderRadius:
-                            BorderRadius
-                                .circular(
-                          12,
-                        ),
-                        side:
-                            const BorderSide(
-                          color:
-                              Color(0xFF89B4FA),
-                          width: 1,
-                        ),
-                      ),
-                      child: const Icon(
-                        Icons.qr_code_scanner,
-                        size: 20,
-                      ),
+      floatingActionButton: !isSelectionMode
+          ? Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                FloatingActionButton.small(
+                  heroTag: "deviceHubBtn",
+                  tooltip: "Device Hub",
+                  onPressed: openDeviceHub,
+                  backgroundColor: const Color(0xFF2A2A3C),
+                  foregroundColor: const Color(0xFFCBA6F7),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    side: const BorderSide(
+                      color: Color(0xFFCBA6F7),
+                      width: 1,
                     ),
+                  ),
+                  child: const Icon(
+                    Icons.devices_other,
+                    size: 20,
+                  ),
+                ),
 
-                    const SizedBox(
-                      height: 10,
-                    ),
-
-                      FloatingActionButton.small(
-                     heroTag: "uploadBtn",
-                        onPressed: uploadFileToPC,
-                      backgroundColor: const Color(0xFF89B4FA),
-                        shape: RoundedRectangleBorder(
-                       borderRadius: BorderRadius.circular(12),
-                         ),
-                       child: const Icon(Icons.upload_file, color: Colors.black, size: 20
+                if (isConnected) ...[
+                  const SizedBox(height: 10),
+                  FloatingActionButton.small(
+                    heroTag: "qrScanBtn",
+                    tooltip: "Scan QR PC Lain",
+                    onPressed: openScanner,
+                    backgroundColor: const Color(0xFF2A2A3C),
+                    foregroundColor: const Color(0xFF89B4FA),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      side: const BorderSide(
+                        color: Color(0xFF89B4FA),
+                        width: 1,
                       ),
                     ),
-                  ],
-                )
-              : null,
+                    child: const Icon(
+                      Icons.qr_code_scanner,
+                      size: 20,
+                    ),
+                  ),
+
+                  const SizedBox(height: 10),
+                  FloatingActionButton.small(
+                    heroTag: "uploadBtn",
+                    onPressed: uploadFileToPC,
+                    backgroundColor: const Color(0xFF89B4FA),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Icon(
+                      Icons.upload_file,
+                      color: Colors.black,
+                      size: 20,
+                    ),
+                  ),
+                ],
+              ],
+            )
+          : null,
     );
   }
 
@@ -1834,6 +1838,15 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                     ),
         ),
       ],
+    );
+  }
+
+  Future<void> openDeviceHub() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const DeviceHubScreen(),
+      ),
     );
   }
 
