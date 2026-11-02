@@ -53,7 +53,7 @@
         android:layout_marginTop="2dp"
         android:ellipsize="middle"
         android:maxLines="1"
-        android:text="Belum ada folder terakhir"
+        android:text="No recent folder"
         android:textColor="#CBA6F7"
         android:textSize="9sp" />
 
@@ -96,7 +96,7 @@
         android:layout_weight="1"
         android:ellipsize="end"
         android:maxLines="1"
-        android:text="Tekan REFRESH untuk mencari ESP32"
+        android:text="Tap REFRESH to find ESP32"
         android:textColor="#A6ADC8"
         android:textSize="9sp" />
 

@@ -323,7 +323,7 @@ class PycleanWidgetProvider : AppWidgetProvider() {
             when {
                 pc.lastPath.isNotBlank() -> pc.lastPath
                 pc.serverUrl.isNotBlank() -> pc.serverUrl
-                else -> "Belum ada PC tersimpan"
+                else -> "No PC saved"
             },
         )
 
@@ -343,13 +343,13 @@ class PycleanWidgetProvider : AppWidgetProvider() {
             R.id.tv_esp_detail,
             when (esp.status) {
                 STATUS_ONLINE -> buildEspDetail(esp)
-                STATUS_CHECKING -> "Mencari di jaringan lokal..."
+                STATUS_CHECKING -> "Searching local network..."
                 STATUS_OFFLINE -> if (esp.ip.isNotBlank()) {
-                    "Terakhir: ${esp.ip} • tekan REFRESH"
+                    "Last: ${esp.ip} • tap REFRESH"
                 } else {
-                    "Tidak ditemukan • tekan REFRESH"
+                    "Not found • tap REFRESH"
                 }
-                else -> "Tekan REFRESH untuk mencari ESP32"
+                else -> "Tap REFRESH to find ESP32"
             },
         )
 

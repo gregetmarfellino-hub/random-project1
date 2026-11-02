@@ -68,7 +68,7 @@ class _QrScannerPageState
 
       appBar: AppBar(
         title: const Text(
-          "Scan QR Code PC",
+          "Scan PC",
         ),
 
         backgroundColor:
@@ -93,7 +93,7 @@ class _QrScannerPageState
 
           IconButton(
             tooltip:
-                "Ganti kamera",
+                "Switch camera",
 
             icon: const Icon(
               Icons.flip_camera_android,
@@ -148,7 +148,7 @@ class _QrScannerPageState
                     ),
 
                     const Text(
-                      "Kamera tidak bisa dibuka",
+                      "Camera unavailable",
                       textAlign:
                           TextAlign.center,
                       style:
@@ -165,17 +165,14 @@ class _QrScannerPageState
                       height: 10,
                     ),
 
-                    Text(
-                    'CODE: ${error.errorCode}\n\n'
-                    'MESSAGE: ${error.errorDetails?.message ?? 'No message'}\n\n'
-                    'CODE: ${error.errorDetails?.code ?? 'No native code'}\n\n'
-                    'DETAILS: ${error.errorDetails?.details ?? 'No details'}',
-                     textAlign: TextAlign.center,
-                     style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 14,
-                       ),
-                     ),
+                    const Text(
+                      'Check camera permission in Settings, then try again.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 14,
+                      ),
+                    ),
 
                     const SizedBox(
                       height: 20,
@@ -193,7 +190,7 @@ class _QrScannerPageState
 
                       label:
                           const Text(
-                        "Buka Pengaturan",
+                        "Open settings",
                       ),
                     ),
 
@@ -210,7 +207,7 @@ class _QrScannerPageState
 
                       child:
                           const Text(
-                        "Kembali",
+                        "Back",
                       ),
                     ),
                   ],
@@ -291,7 +288,7 @@ class _QrScannerPageState
 
                 child:
                     const Text(
-                  "Arahkan kamera ke QR Code PyClean di PC",
+                  "Point the camera at the PyClean QR code",
 
                   textAlign:
                       TextAlign.center,

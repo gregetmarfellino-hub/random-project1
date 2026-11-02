@@ -54,7 +54,7 @@ class _RemoteFolderPickerDialogState
       if (!result.isSuccess) {
         setState(() {
           isLoading = false;
-          errorMessage = 'Folder PC tidak dapat dibuka.';
+          errorMessage = 'Could not open this folder.';
         });
         return;
       }
@@ -82,7 +82,7 @@ class _RemoteFolderPickerDialogState
       if (!mounted) return;
       setState(() {
         isLoading = false;
-        errorMessage = 'Gagal membuka folder: $e';
+        errorMessage = 'Could not open this folder.';
       });
     }
   }
@@ -103,7 +103,7 @@ class _RemoteFolderPickerDialogState
             color: Color(0xFF89B4FA),
           ),
           SizedBox(width: 10),
-          Text('Pilih Folder Tujuan'),
+          Text('Choose destination'),
         ],
       ),
       content: SizedBox(
@@ -124,7 +124,7 @@ class _RemoteFolderPickerDialogState
               child: Row(
                 children: [
                   IconButton(
-                    tooltip: 'Folder atas',
+                    tooltip: 'Up one folder',
                     onPressed: canGoUp && !isLoading
                         ? () => _load(parentPath)
                         : null,
@@ -132,7 +132,7 @@ class _RemoteFolderPickerDialogState
                   ),
                   Expanded(
                     child: Text(
-                      currentPath.isEmpty ? 'Memuat...' : currentPath,
+                      currentPath.isEmpty ? 'Loading...' : currentPath,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
@@ -160,7 +160,7 @@ class _RemoteFolderPickerDialogState
                       : directories.isEmpty
                           ? const Center(
                               child: Text(
-                                'Tidak ada sub-folder di sini.',
+                                'No subfolders here.',
                                 style: TextStyle(color: Colors.white54),
                               ),
                             )
@@ -190,14 +190,14 @@ class _RemoteFolderPickerDialogState
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: const Text('Batal'),
+          child: const Text('Cancel'),
         ),
         FilledButton.icon(
           onPressed: currentPath.isEmpty || isLoading
               ? null
               : () => Navigator.pop(context, currentPath),
           icon: const Icon(Icons.check),
-          label: const Text('Pindah ke sini'),
+          label: const Text('Move here'),
         ),
       ],
     );

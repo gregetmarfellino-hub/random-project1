@@ -23,11 +23,25 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
 
   bool isConnected = false;
   bool isCheckingSavedPc = false;
+  bool isConnectingToPc = false;
+  bool isReconnectingToPc = false;
   bool? savedPcOnline;
+  String? savedPcConnectionHint;
 
   String savedServerUrl = '';
   String savedDeviceName = 'PyClean PC';
   String savedLastPath = '';
+
+  bool pcShareEnabled = false;
+  String pcSharedRoot = '';
+  String pcSharedName = '';
+  bool pcReadOnly = false;
+  bool pcCanDownload = true;
+  bool pcCanUpload = true;
+  bool pcCanRename = true;
+  bool pcCanMove = true;
+  bool pcCanDelete = true;
+  bool pcCanSort = true;
 
   String currentPath = "";
   String parentPath = "";
@@ -36,6 +50,18 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
   List filteredFileItems = [];
 
   bool isLoadingFiles = false;
+
+  bool isTransferBusy = false;
+  bool isTransferCancelling = false;
+  String transferName = '';
+  _TransferDirection? transferDirection;
+  int transferBytes = 0;
+  int transferTotalBytes = 0;
+  double transferBytesPerSecond = 0;
+  DateTime? _transferStartedAt;
+  DateTime? _lastTransferUiUpdate;
+  PyCleanTransferController? _transferController;
+  final List<_TransferHistoryItem> transferHistory = <_TransferHistoryItem>[];
 
   bool isSelectionMode = false;
   bool isBatchBusy = false;
@@ -51,9 +77,57 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
 
   @override
   void dispose() {
+    _transferController?.cancel();
     searchController.dispose();
     super.dispose();
   }
+
+  void _applyServerAccess(ServerStatusResult status) {
+    pcShareEnabled = status.shareEnabled;
+    pcSharedRoot = status.sharedRoot;
+    pcSharedName = status.sharedName;
+    pcReadOnly = status.readOnly;
+    pcCanDownload = status.canDownload;
+    pcCanUpload = status.canUpload;
+    pcCanRename = status.canRename;
+    pcCanMove = status.canMove;
+    pcCanDelete = status.canDelete;
+    pcCanSort = status.canSort;
+
+    if (!pcCanMove && !pcCanDelete) {
+      selectedPaths.clear();
+      isSelectionMode = false;
+      isBatchBusy = false;
+    }
+  }
+
+  String get _displayCurrentPath {
+    if (!pcShareEnabled || pcSharedRoot.trim().isEmpty) {
+      return currentPath;
+    }
+
+    final root = pcSharedRoot.replaceAll(r'\', '/');
+    final current = currentPath.replaceAll(r'\', '/');
+
+    if (current.toLowerCase() == root.toLowerCase()) {
+      return '/';
+    }
+
+    final prefix = root.endsWith('/') ? root : '$root/';
+    if (current.toLowerCase().startsWith(prefix.toLowerCase())) {
+      return '/${current.substring(prefix.length)}';
+    }
+
+    return currentPath;
+  }
+
+  String get _accessLabel {
+    if (pcReadOnly) return 'READ ONLY';
+    if (pcShareEnabled) return 'SHARED';
+    return 'FULL ACCESS';
+  }
+
+  bool get _canSelectItems => pcCanMove || pcCanDelete;
 
   Future<void> _loadSavedConnection() async {
     final saved = await _connectionStore.load();
@@ -75,16 +149,23 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
 
     setState(() {
       isCheckingSavedPc = true;
+      savedPcConnectionHint = null;
     });
 
     _api.setServerUrl(savedServerUrl);
 
     try {
-      final status = await _api.status();
+      final status = await _api.status(
+        timeout: const Duration(seconds: 4),
+      );
       if (!mounted) return;
 
       setState(() {
         savedPcOnline = status.isSuccess;
+        _applyServerAccess(status);
+        savedPcConnectionHint = status.isSuccess
+            ? null
+            : 'PyClean Agent is offline.';
         if (status.deviceName.trim().isNotEmpty) {
           savedDeviceName = status.deviceName;
         }
@@ -96,10 +177,16 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
           deviceName: savedDeviceName,
         );
       }
-    } catch (_) {
+    } catch (e) {
+      debugPrint(
+        'PyClean saved-PC status failed: ${pyCleanTechnicalDetails(e)}',
+      );
       if (!mounted) return;
       setState(() {
         savedPcOnline = false;
+        savedPcConnectionHint =
+            '${pyCleanConnectionMessage(e)} '
+            'If the PC changed networks, scan a fresh QR code.';
       });
     } finally {
       if (mounted) {
@@ -113,14 +200,24 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
   Future<void> connectToServer(
     String url, {
     String? preferredPath,
+    bool reconnecting = false,
   }) async {
     _api.setServerUrl(url);
 
+    setState(() {
+      isConnectingToPc = !reconnecting;
+      isReconnectingToPc = reconnecting;
+      savedPcConnectionHint = null;
+    });
+
     try {
-      final status = await _api.status();
+      final status = await _api.status(
+        timeout: const Duration(seconds: 10),
+        attempts: 2,
+      );
 
       if (!status.isSuccess) {
-        throw StateError('PyClean server tidak tersedia');
+        throw StateError('PyClean server is not online');
       }
 
       final deviceName = status.deviceName.trim().isEmpty
@@ -139,22 +236,40 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
         savedServerUrl = _api.serverUrl;
         savedDeviceName = deviceName;
         savedPcOnline = true;
+        _applyServerAccess(status);
+        savedPcConnectionHint = null;
+        isConnectingToPc = false;
+        isReconnectingToPc = false;
       });
 
-      final targetPath = preferredPath?.trim();
+      final targetPath = status.shareEnabled
+          ? null
+          : preferredPath?.trim();
+
       await fetchDirectory(
         targetPath == null || targetPath.isEmpty ? null : targetPath,
       );
     } catch (e) {
+      debugPrint(
+        'PyClean connect failed: ${pyCleanTechnicalDetails(e)}',
+      );
       if (!mounted) return;
+
+      final message = pyCleanConnectionMessage(e);
+      final staleHint = reconnecting
+          ? ' If the network changed, scan a fresh QR code.'
+          : '';
 
       setState(() {
         isConnected = false;
         savedPcOnline = false;
+        isConnectingToPc = false;
+        isReconnectingToPc = false;
+        savedPcConnectionHint = '$message$staleHint';
       });
 
       showSnackBar(
-        'Tidak bisa terhubung ke PC: $e',
+        '$message$staleHint',
         Colors.red,
       );
     }
@@ -166,6 +281,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
     await connectToServer(
       savedServerUrl,
       preferredPath: savedLastPath,
+      reconnecting: true,
     );
   }
 
@@ -214,7 +330,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
         await _connectionStore.saveLastPath(result.currentPath);
       } else {
         showSnackBar(
-          "Gagal mengambil direktori PC",
+          "Could not open this folder.",
           Colors.red,
         );
 
@@ -224,7 +340,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
       }
     } catch (e) {
       showSnackBar(
-        "Koneksi Error: $e",
+        "Connection failed.",
         Colors.red,
       );
 
@@ -269,7 +385,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
   }
 
   void enterSelectionMode([Map? firstItem]) {
-    if (isBatchBusy) return;
+    if (isBatchBusy || !_canSelectItems) return;
 
     setState(() {
       isSelectionMode = true;
@@ -321,6 +437,8 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
   }
 
   Future<void> moveSelectedItems() async {
+    if (!pcCanMove) return;
+
     final items = selectedItems;
     if (items.isEmpty || isBatchBusy) return;
 
@@ -375,34 +493,36 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
 
     showSnackBar(
       failed == 0
-          ? '✅ $moved item berhasil dipindahkan.'
-          : '$moved berhasil dipindahkan, $failed gagal.',
+          ? 'Moved $moved item(s).'
+          : 'Moved $moved; $failed failed.',
       failed == 0 ? Colors.green : Colors.orange,
     );
   }
 
   Future<void> deleteSelectedItems() async {
+    if (!pcCanDelete) return;
+
     final items = selectedItems;
     if (items.isEmpty || isBatchBusy) return;
 
     final bool confirmed = await showDialog<bool>(
           context: context,
           builder: (ctx) => AlertDialog(
-            title: const Text('Hapus beberapa item?'),
+            title: const Text('Delete selected items?'),
             content: Text(
-              '${items.length} item akan dihapus dari PC secara permanen.',
+              '${items.length} item(s) will be permanently deleted from the PC.',
             ),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(ctx, false),
-                child: const Text('Batal'),
+                child: const Text('Cancel'),
               ),
               FilledButton(
                 style: FilledButton.styleFrom(
                   backgroundColor: Colors.redAccent,
                 ),
                 onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('Hapus semua'),
+                child: const Text('Delete'),
               ),
             ],
           ),
@@ -446,55 +566,436 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
 
     showSnackBar(
       failed == 0
-          ? '✅ $deleted item berhasil dihapus.'
-          : '$deleted berhasil dihapus, $failed gagal.',
+          ? 'Deleted $deleted item(s).'
+          : 'Deleted $deleted; $failed failed.',
       failed == 0 ? Colors.green : Colors.orange,
     );
   }
 
+  void _beginTransfer(
+    _TransferDirection direction,
+    String name,
+  ) {
+    _transferController?.cancel();
+
+    setState(() {
+      isTransferBusy = true;
+      isTransferCancelling = false;
+      transferDirection = direction;
+      transferName = name;
+      transferBytes = 0;
+      transferTotalBytes = 0;
+      transferBytesPerSecond = 0;
+      _transferStartedAt = DateTime.now();
+      _lastTransferUiUpdate = null;
+      _transferController = PyCleanTransferController();
+    });
+  }
+
+  void _updateTransferProgress(
+    int transferred,
+    int total,
+  ) {
+    if (!mounted || !isTransferBusy) return;
+
+    final now = DateTime.now();
+    final lastUpdate = _lastTransferUiUpdate;
+    final isComplete = total > 0 && transferred >= total;
+
+    if (!isComplete &&
+        lastUpdate != null &&
+        now.difference(lastUpdate) < const Duration(milliseconds: 100)) {
+      return;
+    }
+
+    final started = _transferStartedAt ?? now;
+    final elapsedMs = now.difference(started).inMilliseconds;
+    final speed = elapsedMs <= 0
+        ? 0.0
+        : transferred / (elapsedMs / 1000.0);
+
+    setState(() {
+      transferBytes = transferred;
+      transferTotalBytes = total;
+      transferBytesPerSecond = speed;
+      _lastTransferUiUpdate = now;
+    });
+  }
+
+  void _finishTransfer({
+    required _TransferResult result,
+    required String message,
+  }) {
+    if (!mounted) return;
+
+    final direction = transferDirection;
+    final name = transferName;
+
+    setState(() {
+      if (direction != null && name.trim().isNotEmpty) {
+        transferHistory.insert(
+          0,
+          _TransferHistoryItem(
+            direction: direction,
+            result: result,
+            name: name,
+            bytes: transferBytes,
+            totalBytes: transferTotalBytes,
+            message: message,
+            at: DateTime.now(),
+          ),
+        );
+
+        if (transferHistory.length > 5) {
+          transferHistory.removeRange(5, transferHistory.length);
+        }
+      }
+
+      isTransferBusy = false;
+      isTransferCancelling = false;
+      transferDirection = null;
+      transferName = '';
+      transferBytes = 0;
+      transferTotalBytes = 0;
+      transferBytesPerSecond = 0;
+      _transferStartedAt = null;
+      _lastTransferUiUpdate = null;
+      _transferController = null;
+    });
+  }
+
+  void _cancelActiveTransfer() {
+    if (!isTransferBusy || isTransferCancelling) return;
+
+    setState(() {
+      isTransferCancelling = true;
+    });
+
+    _transferController?.cancel();
+  }
+
+  String _fileNameFromPath(String path) {
+    final normalized = path.replaceAll(r'\', '/');
+    final parts = normalized.split('/');
+    return parts.isEmpty ? path : parts.last;
+  }
+
+  String _transferSpeedLabel() {
+    if (transferBytesPerSecond <= 0) return 'Starting...';
+    return '${formatBytes(transferBytesPerSecond.round())}/s';
+  }
+
+  String _transferTimeLabel(DateTime value) {
+    final hour = value.hour.toString().padLeft(2, '0');
+    final minute = value.minute.toString().padLeft(2, '0');
+    return '$hour:$minute';
+  }
+
+  Widget _buildTransferPanel() {
+    final active = isTransferBusy && transferDirection != null;
+    final progress = transferTotalBytes > 0
+        ? (transferBytes / transferTotalBytes).clamp(0.0, 1.0).toDouble()
+        : null;
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(10, 8, 10, 2),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF21222C),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: active
+              ? const Color(0x6689B4FA)
+              : const Color(0x3345475A),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                active
+                    ? transferDirection == _TransferDirection.upload
+                        ? Icons.upload_rounded
+                        : Icons.download_rounded
+                    : Icons.swap_vert_rounded,
+                size: 18,
+                color: const Color(0xFF89B4FA),
+              ),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  'TRANSFERS',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.8,
+                    color: Colors.white70,
+                  ),
+                ),
+              ),
+              if (!active && transferHistory.isNotEmpty)
+                IconButton(
+                  tooltip: 'Clear transfer history',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () {
+                    setState(() {
+                      transferHistory.clear();
+                    });
+                  },
+                  icon: const Icon(
+                    Icons.clear_all_rounded,
+                    size: 18,
+                    color: Colors.white38,
+                  ),
+                ),
+            ],
+          ),
+          if (active) ...[
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    transferName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  progress == null
+                      ? _transferSpeedLabel()
+                      : '${(progress * 100).round()}%',
+                  style: const TextStyle(
+                    color: Color(0xFFA6E3A1),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 9),
+            LinearProgressIndicator(
+              value: progress,
+              minHeight: 6,
+              borderRadius: BorderRadius.circular(999),
+            ),
+            const SizedBox(height: 7),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    transferTotalBytes > 0
+                        ? '${formatBytes(transferBytes)} / ${formatBytes(transferTotalBytes)} • ${_transferSpeedLabel()}'
+                        : '${formatBytes(transferBytes)} • ${_transferSpeedLabel()}',
+                    style: const TextStyle(
+                      color: Colors.white54,
+                      fontSize: 10,
+                    ),
+                  ),
+                ),
+                TextButton.icon(
+                  onPressed:
+                      isTransferCancelling ? null : _cancelActiveTransfer,
+                  icon: isTransferCancelling
+                      ? const SizedBox(
+                          width: 13,
+                          height: 13,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.close_rounded, size: 16),
+                  label: Text(
+                    isTransferCancelling ? 'Cancelling' : 'Cancel',
+                  ),
+                ),
+              ],
+            ),
+          ],
+          if (transferHistory.isNotEmpty) ...[
+            if (active) const Divider(height: 18),
+            ...transferHistory.take(3).map((entry) {
+              final success = entry.result == _TransferResult.success;
+              final cancelled = entry.result == _TransferResult.cancelled;
+              final color = success
+                  ? const Color(0xFFA6E3A1)
+                  : cancelled
+                      ? const Color(0xFFF9E2AF)
+                      : const Color(0xFFF38BA8);
+              final icon = success
+                  ? Icons.check_circle_outline_rounded
+                  : cancelled
+                      ? Icons.cancel_outlined
+                      : Icons.error_outline_rounded;
+
+              return Padding(
+                padding: const EdgeInsets.only(top: 7),
+                child: Row(
+                  children: [
+                    Icon(icon, size: 16, color: color),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            entry.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          Text(
+                            entry.message,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.white38,
+                              fontSize: 9,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Icon(
+                      entry.direction == _TransferDirection.upload
+                          ? Icons.north_east_rounded
+                          : Icons.south_west_rounded,
+                      size: 13,
+                      color: Colors.white30,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      _transferTimeLabel(entry.at),
+                      style: const TextStyle(
+                        color: Colors.white30,
+                        fontSize: 9,
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }),
+          ],
+        ],
+      ),
+    );
+  }
+
   Future<void> uploadFileToPC() async {
+    if (!pcCanUpload) {
+      showSnackBar(
+        'Uploads are disabled in read-only mode.',
+        Colors.orange,
+      );
+      return;
+    }
+
     if (currentPath.isEmpty || !_api.isConfigured) {
       return;
     }
 
-    final PlatformFile? pickedFile =
-        await FilePicker.pickFile();
+    if (isTransferBusy) {
+      showSnackBar(
+        'Finish or cancel the current transfer first.',
+        Colors.orange,
+      );
+      return;
+    }
+
+    final PlatformFile? pickedFile = await FilePicker.pickFile();
 
     if (pickedFile == null || pickedFile.path == null) {
       return;
     }
 
-    showSnackBar(
-      "Mengunggah file ke PC... ⏳",
-      Colors.blue,
+    _beginTransfer(
+      _TransferDirection.upload,
+      pickedFile.name,
     );
+
+    final controller = _transferController!;
 
     try {
       final result = await _api.uploadFile(
         targetDirectory: currentPath,
         filePath: pickedFile.path!,
+        controller: controller,
+        onProgress: _updateTransferProgress,
       );
 
       if (!mounted) return;
 
       if (result.isSuccess) {
+        final savedName = _fileNameFromPath(result.savedPath ?? '');
+        final renamedForDuplicate =
+            savedName.isNotEmpty && savedName != pickedFile.name;
+
+        final message = renamedForDuplicate
+            ? 'Uploaded as $savedName because that filename already existed on the PC.'
+            : (result.message ?? 'Upload complete.');
+
+        _finishTransfer(
+          result: _TransferResult.success,
+          message: message,
+        );
+
         showSnackBar(
-          "✅ File berhasil terkirim ke PC!",
+          renamedForDuplicate
+              ? 'Uploaded as $savedName'
+              : 'Upload complete.',
           Colors.green,
         );
 
         await fetchDirectory(currentPath);
       } else {
+        final message = result.message ?? 'Upload failed.';
+
+        _finishTransfer(
+          result: _TransferResult.failed,
+          message: message,
+        );
+
         showSnackBar(
-          "Gagal upload: ${result.rawBody}",
+          message,
           Colors.red,
         );
       }
-    } catch (e) {
+    } on PyCleanTransferCancelled {
       if (!mounted) return;
 
+      _finishTransfer(
+        result: _TransferResult.cancelled,
+        message: 'Upload cancelled.',
+      );
+
       showSnackBar(
-        "Error upload: $e",
+        'Upload cancelled.',
+        Colors.orange,
+      );
+    } catch (e) {
+      debugPrint(
+        'PyClean upload failed: ${pyCleanTechnicalDetails(e)}',
+      );
+      if (!mounted) return;
+
+      final message = pyCleanTransferMessage(e);
+
+      _finishTransfer(
+        result: _TransferResult.failed,
+        message: message,
+      );
+
+      showSnackBar(
+        message,
         Colors.red,
       );
     }
@@ -504,30 +1005,54 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
     String itemPath,
     String itemName,
   ) async {
+    if (!pcCanDownload) return;
+
     if (!_api.isConfigured || itemPath.trim().isEmpty) {
       return;
     }
 
-    showSnackBar(
-      'Mengunduh $itemName dari PC... ⏳',
-      Colors.blue,
+    if (isTransferBusy) {
+      showSnackBar(
+        'Finish or cancel the current transfer first.',
+        Colors.orange,
+      );
+      return;
+    }
+
+    _beginTransfer(
+      _TransferDirection.download,
+      itemName,
     );
 
+    final controller = _transferController!;
+
     try {
-      final result = await _api.downloadFile(itemPath);
+      final result = await _api.downloadFile(
+        itemPath,
+        controller: controller,
+        onProgress: _updateTransferProgress,
+      );
 
       if (!mounted) return;
 
       if (!result.isSuccess) {
+        final message =
+            result.message ?? 'Download failed.';
+
+        _finishTransfer(
+          result: _TransferResult.failed,
+          message: message,
+        );
+
         showSnackBar(
-          result.message ?? 'Gagal mengunduh file dari PC',
+          message,
           Colors.red,
         );
         return;
       }
 
       final savedPath = await FilePicker.saveFile(
-        dialogTitle: 'Simpan file dari PyClean PC',
+        dialogTitle: 'Save from PyClean',
         fileName: itemName,
         bytes: result.bytes,
       );
@@ -535,22 +1060,58 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
       if (!mounted) return;
 
       if (savedPath == null) {
+        _finishTransfer(
+          result: _TransferResult.cancelled,
+          message: 'No save location selected.',
+        );
+
         showSnackBar(
-          'Penyimpanan dibatalkan',
+          'Save cancelled.',
           Colors.orange,
         );
         return;
       }
 
-      showSnackBar(
-        '✅ $itemName berhasil disimpan ke HP!',
-        Colors.green,
+      final savedFileName = savedPath.pathSegments.isEmpty
+          ? itemName
+          : Uri.decodeComponent(savedPath.pathSegments.last);
+
+      _finishTransfer(
+        result: _TransferResult.success,
+        message: 'Saved as $savedFileName',
       );
-    } catch (e) {
-      if (!mounted) return;
 
       showSnackBar(
-        'Error download: $e',
+        'Saved to device.',
+        Colors.green,
+      );
+    } on PyCleanTransferCancelled {
+      if (!mounted) return;
+
+      _finishTransfer(
+        result: _TransferResult.cancelled,
+        message: 'Download cancelled.',
+      );
+
+      showSnackBar(
+        'Download cancelled.',
+        Colors.orange,
+      );
+    } catch (e) {
+      debugPrint(
+        'PyClean download failed: ${pyCleanTechnicalDetails(e)}',
+      );
+      if (!mounted) return;
+
+      final message = pyCleanTransferMessage(e);
+
+      _finishTransfer(
+        result: _TransferResult.failed,
+        message: message,
+      );
+
+      showSnackBar(
+        message,
         Colors.red,
       );
     }
@@ -560,18 +1121,20 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
     String itemPath,
     String itemName,
   ) async {
+    if (!pcCanRename) return;
+
     String draftName = itemName;
 
     final String? newName = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Ganti Nama'),
+        title: const Text('Rename'),
         content: TextFormField(
           initialValue: itemName,
           autofocus: true,
           decoration: const InputDecoration(
-            labelText: 'Nama baru',
-            hintText: 'Masukkan nama file/folder',
+            labelText: 'New name',
+            hintText: 'Enter a new name',
           ),
           onChanged: (value) {
             draftName = value;
@@ -586,7 +1149,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Batal'),
+            child: const Text('Cancel'),
           ),
           FilledButton(
             onPressed: () {
@@ -619,13 +1182,13 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
 
       if (result.isSuccess) {
         showSnackBar(
-          result.message ?? 'Nama berhasil diubah.',
+          result.message ?? 'Renamed.',
           Colors.green,
         );
         await fetchDirectory(currentPath);
       } else {
         showSnackBar(
-          result.message ?? 'Gagal mengganti nama.',
+          result.message ?? 'Rename failed.',
           Colors.red,
         );
       }
@@ -642,6 +1205,8 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
     String itemPath,
     bool isDirectory,
   ) async {
+    if (!pcCanMove) return;
+
     final String? targetDirectory = await showDialog<String>(
       context: context,
       builder: (_) => RemoteFolderPickerDialog(
@@ -665,13 +1230,13 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
 
       if (result.isSuccess) {
         showSnackBar(
-          result.message ?? 'Item berhasil dipindahkan.',
+          result.message ?? 'Moved.',
           Colors.green,
         );
         await fetchDirectory(currentPath);
       } else {
         showSnackBar(
-          result.message ?? 'Gagal memindahkan item.',
+          result.message ?? 'Move failed.',
           Colors.red,
         );
       }
@@ -688,23 +1253,25 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
   Future executeSortFolder(
     String targetPath,
   ) async {
+    if (!pcCanSort) return;
+
     bool confirm = await showDialog(
           context: context,
           builder: (ctx) => AlertDialog(
             title: const Text(
-              "🧹 Rapikan Folder ini?",
+              "Organize this folder?",
             ),
             content: Text(
-              "File di folder ini akan dikelompokkan "
-              "otomatis ke sub-folder khusus berdasarkan "
-              "jenis filenya.\n\nPath: $targetPath",
+              "Files in this folder will be grouped "
+              "into subfolders based on "
+              "file type.\n\nPath: $targetPath",
             ),
             actions: [
               TextButton(
                 onPressed: () {
                   Navigator.pop(ctx, false);
                 },
-                child: const Text("Batal"),
+                child: const Text("Cancel"),
               ),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
@@ -715,7 +1282,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                   Navigator.pop(ctx, true);
                 },
                 child: const Text(
-                  "Ya, Sortir!",
+                  "Organize",
                   style: TextStyle(
                     color: Colors.black,
                     fontWeight: FontWeight.bold,
@@ -731,7 +1298,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
 
     try {
       showSnackBar(
-        "Mulai merapikan folder...",
+        "Organizing folder...",
         Colors.blue,
       );
 
@@ -740,7 +1307,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
       if (result.isSuccess) {
         showSnackBar(
           result.message ??
-              "Sukses menyortir!",
+              "Folder organized.",
           Colors.green,
         );
 
@@ -748,7 +1315,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
       } else {
         showSnackBar(
           result.message ??
-              "Gagal menyortir",
+              "Organize failed.",
           Colors.red,
         );
       }
@@ -764,22 +1331,24 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
     String itemPath,
     String itemName,
   ) async {
+    if (!pcCanDelete) return;
+
     bool confirm = await showDialog(
           context: context,
           builder: (ctx) => AlertDialog(
             title: const Text(
-              "Konfirmasi Hapus",
+              "Delete item?",
             ),
             content: Text(
-              "Yakin ingin menghapus "
-              "'$itemName' dari PC secara permanen?",
+              "Permanently delete "
+              "'$itemName' from the PC?",
             ),
             actions: [
               TextButton(
                 onPressed: () {
                   Navigator.pop(ctx, false);
                 },
-                child: const Text("Batal"),
+                child: const Text("Cancel"),
               ),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
@@ -790,7 +1359,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                   Navigator.pop(ctx, true);
                 },
                 child: const Text(
-                  "Ya, Hapus",
+                  "Delete",
                   style: TextStyle(
                     color: Colors.white,
                   ),
@@ -809,7 +1378,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
       if (result.isSuccess) {
         showSnackBar(
           result.message ??
-              "Item terhapus!",
+              "Deleted.",
           Colors.green,
         );
 
@@ -817,7 +1386,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
       } else {
         showSnackBar(
           result.message ??
-              "Gagal menghapus",
+              "Delete failed.",
           Colors.red,
         );
       }
@@ -841,7 +1410,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
 
     final String formattedSize =
         isDir
-            ? 'Folder / Directory'
+            ? 'Folder'
             : formatBytes(item['size']);
 
     showDialog(
@@ -949,8 +1518,8 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                           ),
                           child: Text(
                             isDir
-                                ? "📁 Directory"
-                                : "📄 File",
+                                ? "Folder"
+                                : "File",
                             style: TextStyle(
                               color: isDir
                                   ? const Color(
@@ -1009,7 +1578,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
               ),
 
               const Text(
-                "( Ketuk layar untuk menutup )",
+                "Tap anywhere to close",
                 style: TextStyle(
                   color: Colors.white54,
                   fontSize: 11,
@@ -1075,7 +1644,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                   const SizedBox(height: 10),
                   FloatingActionButton.small(
                     heroTag: "qrScanBtn",
-                    tooltip: "Scan QR PC Lain",
+                    tooltip: "Scan another PC",
                     onPressed: openScanner,
                     backgroundColor: const Color(0xFF2A2A3C),
                     foregroundColor: const Color(0xFF89B4FA),
@@ -1092,10 +1661,11 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                     ),
                   ),
 
-                  const SizedBox(height: 10),
-                  FloatingActionButton.small(
+                  if (pcCanUpload) ...[
+                    const SizedBox(height: 10),
+                    FloatingActionButton.small(
                     heroTag: "uploadBtn",
-                    onPressed: uploadFileToPC,
+                    onPressed: isTransferBusy ? null : uploadFileToPC,
                     backgroundColor: const Color(0xFF89B4FA),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12),
@@ -1106,6 +1676,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                       size: 20,
                     ),
                   ),
+                  ],
                 ],
               ],
             )
@@ -1115,18 +1686,27 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
 
   Widget buildConnectScreen() {
     final hasSavedPc = savedServerUrl.trim().isNotEmpty;
-    final statusColor = savedPcOnline == true
-        ? const Color(0xFFA6E3A1)
-        : savedPcOnline == false
-            ? Colors.redAccent
-            : Colors.grey;
-    final statusText = isCheckingSavedPc
-        ? 'Checking...'
-        : savedPcOnline == true
-            ? 'Online'
-            : savedPcOnline == false
-                ? 'Offline'
-                : 'Unknown';
+    final connectionBusy =
+        isCheckingSavedPc || isConnectingToPc || isReconnectingToPc;
+    final statusColor =
+        isConnectingToPc || isReconnectingToPc || isCheckingSavedPc
+            ? const Color(0xFFF9E2AF)
+            : savedPcOnline == true
+                ? const Color(0xFFA6E3A1)
+                : savedPcOnline == false
+                    ? Colors.redAccent
+                    : Colors.grey;
+    final statusText = isConnectingToPc
+        ? 'CONNECTING'
+        : isReconnectingToPc
+            ? 'RECONNECTING'
+            : isCheckingSavedPc
+                ? 'CHECKING'
+                : savedPcOnline == true
+                    ? 'ONLINE'
+                    : savedPcOnline == false
+                        ? 'OFFLINE'
+                        : 'UNKNOWN';
 
     return Center(
       child: SingleChildScrollView(
@@ -1141,7 +1721,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
             ),
             const SizedBox(height: 20),
             const Text(
-              'PyClean PC Remote',
+              'PC Remote',
               style: TextStyle(
                 fontSize: 22,
                 fontWeight: FontWeight.bold,
@@ -1150,7 +1730,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
             ),
             const SizedBox(height: 8),
             const Text(
-              'Hubungkan ke PC kamu',
+              'Connect to a PyClean PC',
               style: TextStyle(
                 fontSize: 14,
                 color: Colors.grey,
@@ -1191,12 +1771,26 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                             ),
                           ),
                         ),
-                        Text(
-                          statusText,
-                          style: TextStyle(
-                            color: statusColor,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 9,
+                            vertical: 5,
+                          ),
+                          decoration: BoxDecoration(
+                            color: statusColor.withValues(alpha: 0.10),
+                            borderRadius: BorderRadius.circular(999),
+                            border: Border.all(
+                              color: statusColor.withValues(alpha: 0.35),
+                            ),
+                          ),
+                          child: Text(
+                            statusText,
+                            style: TextStyle(
+                              color: statusColor,
+                              fontSize: 9,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 0.6,
+                            ),
                           ),
                         ),
                       ],
@@ -1210,6 +1804,42 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                         fontSize: 12,
                       ),
                     ),
+                    if (savedPcConnectionHint != null &&
+                        savedPcConnectionHint!.trim().isNotEmpty) ...[
+                      const SizedBox(height: 10),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: Colors.orange.withValues(alpha: 0.10),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: Colors.orange.withValues(alpha: 0.30),
+                          ),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Icon(
+                              Icons.info_outline_rounded,
+                              size: 17,
+                              color: Colors.orangeAccent,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                savedPcConnectionHint!,
+                                style: const TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: 11,
+                                  height: 1.35,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                     if (savedLastPath.trim().isNotEmpty) ...[
                       const SizedBox(height: 6),
                       Text(
@@ -1227,17 +1857,29 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                       children: [
                         Expanded(
                           child: FilledButton.icon(
-                            onPressed: isCheckingSavedPc
+                            onPressed: connectionBusy
                                 ? null
                                 : reconnectSavedPc,
-                            icon: const Icon(Icons.link),
-                            label: const Text('Reconnect'),
+                            icon: isReconnectingToPc
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.link),
+                            label: Text(
+                              isReconnectingToPc
+                                  ? 'Reconnecting...'
+                                  : 'Reconnect',
+                            ),
                           ),
                         ),
                         const SizedBox(width: 8),
                         IconButton(
                           tooltip: 'Check status',
-                          onPressed: isCheckingSavedPc
+                          onPressed: connectionBusy
                               ? null
                               : refreshSavedPcStatus,
                           icon: isCheckingSavedPc
@@ -1265,18 +1907,31 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                 ),
                 backgroundColor: const Color(0xFF89B4FA),
               ),
-              icon: const Icon(
-                Icons.qr_code_scanner,
-                color: Colors.black,
-              ),
+              icon: isConnectingToPc
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.black,
+                      ),
+                    )
+                  : const Icon(
+                      Icons.qr_code_scanner,
+                      color: Colors.black,
+                    ),
               label: Text(
-                hasSavedPc ? 'Scan QR PC Lain' : 'Scan QR Code PC',
+                isConnectingToPc
+                    ? 'Connecting...'
+                    : hasSavedPc
+                        ? 'Scan another PC'
+                        : 'Scan PC',
                 style: const TextStyle(
                   color: Colors.black,
                   fontWeight: FontWeight.bold,
                 ),
               ),
-              onPressed: openScanner,
+              onPressed: connectionBusy ? null : openScanner,
             ),
           ],
         ),
@@ -1297,13 +1952,13 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
             child: Row(
               children: [
                 IconButton(
-                  tooltip: 'Batal pilih',
+                  tooltip: 'Cancel selection',
                   onPressed: isBatchBusy ? null : clearSelection,
                   icon: const Icon(Icons.close),
                 ),
                 Expanded(
                   child: Text(
-                    '${selectedPaths.length} dipilih',
+                    '${selectedPaths.length} selected',
                     style: const TextStyle(
                       fontSize: 15,
                       fontWeight: FontWeight.bold,
@@ -1321,32 +1976,34 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                   )
                 else ...[
                   IconButton(
-                    tooltip: 'Pilih semua yang terlihat',
+                    tooltip: 'Select all',
                     onPressed: filteredFileItems.isEmpty
                         ? null
                         : selectAllVisible,
                     icon: const Icon(Icons.select_all),
                   ),
-                  IconButton(
-                    tooltip: 'Pindahkan yang dipilih',
-                    onPressed: selectedPaths.isEmpty
-                        ? null
-                        : moveSelectedItems,
-                    icon: const Icon(
-                      Icons.drive_file_move_outline,
-                      color: Color(0xFFCBA6F7),
+                  if (pcCanMove)
+                    IconButton(
+                      tooltip: 'Move selected',
+                      onPressed: selectedPaths.isEmpty
+                          ? null
+                          : moveSelectedItems,
+                      icon: const Icon(
+                        Icons.drive_file_move_outline,
+                        color: Color(0xFFCBA6F7),
+                      ),
                     ),
-                  ),
-                  IconButton(
-                    tooltip: 'Hapus yang dipilih',
-                    onPressed: selectedPaths.isEmpty
-                        ? null
-                        : deleteSelectedItems,
-                    icon: const Icon(
-                      Icons.delete_outline,
-                      color: Colors.redAccent,
+                  if (pcCanDelete)
+                    IconButton(
+                      tooltip: 'Delete selected',
+                      onPressed: selectedPaths.isEmpty
+                          ? null
+                          : deleteSelectedItems,
+                      icon: const Icon(
+                        Icons.delete_outline,
+                        color: Colors.redAccent,
+                      ),
                     ),
-                  ),
                 ],
               ],
             ),
@@ -1369,7 +2026,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                     padding: EdgeInsets.zero,
                     constraints: const BoxConstraints(),
                     onPressed: () => fetchDirectory(parentPath),
-                    tooltip: 'Kembali ke folder atas',
+                    tooltip: 'Up one folder',
                   ),
                 if (currentPath != parentPath)
                   const SizedBox(width: 8),
@@ -1381,7 +2038,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    currentPath,
+                    _displayCurrentPath,
                     style: const TextStyle(
                       fontFamily: 'monospace',
                       fontSize: 12,
@@ -1390,6 +2047,36 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
+                if (pcShareEnabled || pcReadOnly) ...[
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 7,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: pcReadOnly
+                          ? const Color(0x22F9E2AF)
+                          : const Color(0x2289B4FA),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: pcReadOnly
+                            ? const Color(0x66F9E2AF)
+                            : const Color(0x6689B4FA),
+                      ),
+                    ),
+                    child: Text(
+                      _accessLabel,
+                      style: TextStyle(
+                        color: pcReadOnly
+                            ? const Color(0xFFF9E2AF)
+                            : const Color(0xFF89B4FA),
+                        fontSize: 8,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                ],
                 Container(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 8,
@@ -1423,18 +2110,20 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                   ),
                 ),
                 const SizedBox(width: 6),
-                IconButton(
-                  tooltip: 'Pilih beberapa item',
-                  onPressed: filteredFileItems.isEmpty
-                      ? null
-                      : enterSelectionMode,
-                  icon: const Icon(
-                    Icons.checklist,
-                    size: 20,
-                    color: Color(0xFF89B4FA),
+                if (_canSelectItems)
+                  IconButton(
+                    tooltip: 'Select items',
+                    onPressed: filteredFileItems.isEmpty
+                        ? null
+                        : enterSelectionMode,
+                    icon: const Icon(
+                      Icons.checklist,
+                      size: 20,
+                      color: Color(0xFF89B4FA),
+                    ),
                   ),
-                ),
-                OutlinedButton.icon(
+                if (pcCanSort)
+                  OutlinedButton.icon(
                   style: OutlinedButton.styleFrom(
                     side: const BorderSide(
                       color: Color(0xFFA6E3A1),
@@ -1452,7 +2141,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                     size: 14,
                   ),
                   label: const Text(
-                    'Sortir',
+                    'Organize',
                     style: TextStyle(
                       color: Color(0xFFA6E3A1),
                       fontSize: 11,
@@ -1460,7 +2149,8 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                   ),
                   onPressed: () => executeSortFolder(currentPath),
                 ),
-                const SizedBox(width: 6),
+                if (pcCanSort)
+                  const SizedBox(width: 6),
                 IconButton(
                   icon: const Icon(
                     Icons.refresh,
@@ -1474,6 +2164,9 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
               ],
             ),
           ),
+
+        if (isTransferBusy || transferHistory.isNotEmpty)
+          _buildTransferPanel(),
 
         Padding(
           padding:
@@ -1490,7 +2183,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
             decoration:
                 InputDecoration(
               hintText:
-                  "Cari file di folder ini...",
+                  "Search this folder...",
 
               prefixIcon:
                   const Icon(
@@ -1556,7 +2249,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                       .isEmpty
                   ? const Center(
                       child: Text(
-                        "Kosong atau file tidak ditemukan",
+                        "No files found",
                       ),
                     )
                   : ListView.builder(
@@ -1649,7 +2342,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                             onLongPress: () {
                               if (isSelectionMode) {
                                 toggleSelection(item);
-                              } else {
+                              } else if (_canSelectItems) {
                                 enterSelectionMode(item);
                               }
                             },
@@ -1726,13 +2419,13 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                                         width: 10,
                                       ),
                                       Text(
-                                        "Inspeksi 3D",
+                                        "3D preview",
                                       ),
                                     ],
                                   ),
                                 ),
 
-                                if (!isDir)
+                                if (!isDir && pcCanDownload)
                                   const PopupMenuItem(
                                     value:
                                         'download',
@@ -1747,7 +2440,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                                           width: 10,
                                         ),
                                         Text(
-                                          'Download ke HP',
+                                          'Download',
                                           style: TextStyle(
                                             color: Color(0xFFA6E3A1),
                                           ),
@@ -1756,7 +2449,8 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                                     ),
                                   ),
 
-                                const PopupMenuItem(
+                                if (pcCanRename)
+                                  const PopupMenuItem(
                                   value:
                                       'rename',
                                   child: Row(
@@ -1773,13 +2467,14 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                                         width: 10,
                                       ),
                                       Text(
-                                        'Ganti Nama',
+                                        'Rename',
                                       ),
                                     ],
                                   ),
                                 ),
 
-                                const PopupMenuItem(
+                                if (pcCanMove)
+                                  const PopupMenuItem(
                                   value:
                                       'move',
                                   child: Row(
@@ -1796,13 +2491,14 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                                         width: 10,
                                       ),
                                       Text(
-                                        'Pindahkan',
+                                        'Move',
                                       ),
                                     ],
                                   ),
                                 ),
 
-                                const PopupMenuItem(
+                                if (pcCanDelete)
+                                  const PopupMenuItem(
                                   value:
                                       'delete',
                                   child: Row(
@@ -1819,7 +2515,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                                         width: 10,
                                       ),
                                       Text(
-                                        "Hapus File",
+                                        "Delete",
                                         style:
                                             TextStyle(
                                           color:
@@ -1871,3 +2567,35 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
     );
   }
 }
+
+enum _TransferDirection {
+  upload,
+  download,
+}
+
+enum _TransferResult {
+  success,
+  failed,
+  cancelled,
+}
+
+class _TransferHistoryItem {
+  const _TransferHistoryItem({
+    required this.direction,
+    required this.result,
+    required this.name,
+    required this.bytes,
+    required this.totalBytes,
+    required this.message,
+    required this.at,
+  });
+
+  final _TransferDirection direction;
+  final _TransferResult result;
+  final String name;
+  final int bytes;
+  final int totalBytes;
+  final String message;
+  final DateTime at;
+}
+
